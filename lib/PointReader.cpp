@@ -12,6 +12,13 @@ also output a text file.
 #define POINT_READER_CPP
 
 #include "./PointReader.h"
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <cmath>
+#include <limits>
+#include <omp.h>
 
 /*
 
@@ -69,73 +76,80 @@ PointReader<T>::PointReader(const PointReader<T> &reader){
 
 // param ctor that accepts 2d arr
 template <class T>
-PointReader<T>::PointReader(T **data, const int&rows, const int &cols){
-    /*
-    Inputs:
-    T**, int, int, double pointer to data to be taken in, number of rows, number of columns
-    Outputs:
-    void
-    Utility:
-    Creates the points based on a double array.
+PointReader<T>::PointReader(T **data, const int &rows, const int &cols) {
+    myVector<Point<T>> points{rows};
+    this->intPointDimensions = cols;
 
-    NOTE: 
+    // Vetores para cada propriedade
+    myVector<double> stddevs{this->intPointDimensions, 0};
+    myVector<double> avgs{this->intPointDimensions, 0};
+    myVector<double> mins{this->intPointDimensions, __DBL_MAX__};
+    myVector<double> maxes{this->intPointDimensions, __DBL_MIN__};
 
-    This assumes that the user properly manages their own memory! We do not
-    do any news or deletes here, just word with the passed in data.
-    You manage your own memory!
-    */
-   myVector<Point<T>> points {rows};
-   this->intPointDimensions = cols;
+    // Paralelizar o loop principal - paralelizado, segunda versão
+    #pragma omp parallel
+    {
+        // Variáveis locais para evitar conflitos entre threads
+        myVector<double> local_avgs(cols, 0);
+        myVector<double> local_mins(cols, __DBL_MAX__);
+        myVector<double> local_maxes(cols, __DBL_MIN__);
 
+        // - paralelizado, segunda versão
+        #pragma omp for
+        for (int i = 0; i < rows; ++i) {
+            Point<T> newPoint{cols};
+            for (int j = 0; j < cols; ++j) {
+                double val = data[i][j];
+                newPoint[j] = val;
 
-    // vectors to hold each needed property
-    myVector<double> stddevs {this->intPointDimensions,0};
-    myVector<double> avgs {this->intPointDimensions,0};
-    myVector<double> mins {this->intPointDimensions,__DBL_MAX__};
-    myVector<double> maxes {this->intPointDimensions,__DBL_MIN__};
+                // Atualiza valores locais
+                if (val >= local_maxes[j]) {
+                    local_maxes[j] = val;
+                }
+                if (val <= local_mins[j]) {
+                    local_mins[j] = val;
+                }
+                local_avgs[j] += val;
+            }
+            points[i] = newPoint;
+        }
 
-   for(int i=0;i<rows;++i){
-       // loop through point counts then point dims
-       Point<T> newPoint{cols};
-       for(int j=0;j<cols;++j){
-           double val = data[i][j];
-           // assign point its dim
-           newPoint[j] = val;
+        // Redução para mins, maxes e avgs - paralelizado, segunda versão
+        #pragma omp critical
+        {
+            for (int j = 0; j < cols; ++j) {
+                if (local_mins[j] < mins[j]) mins[j] = local_mins[j];
+                if (local_maxes[j] > maxes[j]) maxes[j] = local_maxes[j];
+                avgs[j] += local_avgs[j];
+            }
+        }
+    }
 
-           if(val >= maxes.tGetByReference(j)){
-               maxes[j] = val;
-           }
-           if(val <= mins.tGetByReference(j)){
-               mins[j] = val;
-           }
-           // add to avgs, later divide by num points
-           avgs[j] += val;
-       }
-       // now put point in vector
-       points[i] = newPoint;
-   }
-   // assign object's point vector to points
-   this->myvectorPoints.voidSetEqualLhsRhs(points);
-   // divide sums by count of points to get avgs
-   int pointCount = points.intLength();
-   for(int i=0;i<this->intPointDimensions;++i){
-       avgs[i] /= pointCount;
-   }
-   // calc stddev
-   // population stddev
-   double diff = 0;
-   for(int i=0;i<pointCount;++i){
-       for(int j=0;j<this->intPointDimensions;++j){
-           diff = this->myvectorPoints.tGetByReference(i).tGetValAtDimNByReference(j) - avgs[j];
-           diff = (diff * diff);
-           stddevs[j] += diff;
-       }
-   }
-   // now divide by num points and sqrt
-   for(int i=0;i<this->intPointDimensions;++i){
-       stddevs[i] = std::sqrt((stddevs.tGetByReference(i)/(pointCount)));
-   }
-    // now assign vectors
+    // Divide somas para calcular médias
+    int pointCount = points.intLength();
+    for (int i = 0; i < this->intPointDimensions; ++i) {
+        avgs[i] /= pointCount;
+    }
+
+    // Calcula desvios padrão (stddev) - paralelizado, segunda versão
+    #pragma omp parallel for
+    for (int i = 0; i < pointCount; ++i) {
+        for (int j = 0; j < this->intPointDimensions; ++j) {
+            double diff = this->myvectorPoints.tGetByReference(i).tGetValAtDimNByReference(j) - avgs[j];
+            diff = (diff * diff);
+
+            #pragma omp atomic
+            stddevs[j] += diff;
+        }
+    }
+
+    // Divide pelo número de pontos e calcula raiz quadrada
+    for (int i = 0; i < this->intPointDimensions; ++i) {
+        stddevs[i] = std::sqrt((stddevs[i] / pointCount));
+    }
+
+    // Agora atribuir os vetores aos atributos do objeto
+    this->myvectorPoints.voidSetEqualLhsRhs(points);
     this->myvectorStdDevs.voidSetEqualLhsRhs(stddevs);
     this->myvectorAvgs.voidSetEqualLhsRhs(avgs);
     this->myvectorMins.voidSetEqualLhsRhs(mins);
@@ -261,7 +275,7 @@ int PointReader<T>::intGetPointDimensions() const{
 }
 // get the total lines of file
 template <class T>
-int PointReader<T>::intGetTotalLines(const std::string &fileName){
+int PointReader<T>::intGetTotalLines(const std::string &fileName) {
     /*
     Inputs:
     string, file name
@@ -270,27 +284,51 @@ int PointReader<T>::intGetTotalLines(const std::string &fileName){
     Utility:
     Gets the total number of lines that are within the passed in file
     */
-    // returns the total number of lines in file
-    // used to initialize the vector size of the points
-    std::ifstream ifstreamFile;
-
-    ifstreamFile.open(fileName);
-    if(!ifstreamFile){
-        std::cout << "Error: file cannot be opened.\n";
-
+    // Abre o arquivo em modo binário para leitura rápida
+    std::ifstream ifstreamFile(fileName, std::ios::in | std::ios::binary);
+    if (!ifstreamFile) {
+        std::cerr << "Error: file cannot be opened.\n";
         exit(1);
     }
 
-    std::string strLine;
-    int counter {0};
-    if(ifstreamFile.is_open()){
-        
-        while(std::getline(ifstreamFile,strLine)){
-            counter++;
+    // Move para o final para determinar o tamanho total do arquivo
+    ifstreamFile.seekg(0, std::ios::end);
+    std::streampos fileSize = ifstreamFile.tellg();
+    ifstreamFile.seekg(0, std::ios::beg);
+
+    // Lê o arquivo em blocos paralelos
+    int totalLines = 0;
+    const int numThreads = omp_get_max_threads();  // Número de threads disponíveis
+    const std::streamsize blockSize = fileSize / numThreads;
+
+    #pragma omp parallel reduction(+:totalLines) // Paralelizado na segunda versão
+    {
+        const int threadID = omp_get_thread_num();
+        std::streampos start = threadID * blockSize;
+        std::streampos end = (threadID == numThreads - 1) ? fileSize : static_cast<std::streampos>((threadID + 1) * blockSize);
+
+        // Buffer para leitura local
+        std::vector<char> buffer(end - start);
+        ifstreamFile.seekg(start, std::ios::beg);
+        ifstreamFile.read(buffer.data(), buffer.size());
+
+        // Conta quebras de linha dentro do buffer
+        int localCount = 0;
+        for (char c : buffer) {
+            if (c == '\n') localCount++;
         }
+
+        totalLines += localCount;
     }
 
-    return counter;
+    // Adiciona a linha final, se não terminar com '\n'
+    ifstreamFile.clear();  // Limpa os flags de EOF
+    ifstreamFile.seekg(-1, std::ios::end);
+    char lastChar;
+    ifstreamFile.get(lastChar);
+    if (lastChar != '\n') totalLines++;
+
+    return totalLines;
 }
 
 /*
@@ -300,97 +338,109 @@ void returning functions
 */
 // read txt file
 template <class T>
-void PointReader<T>::voidReadTxt(const std::string &fileName){
+void PointReader<T>::voidReadTxt(const std::string &fileName) {
     /*
     Inputs:
     string, file name
     Outputs:
     void
     Utility:
-    Reads the data from the passed in file and populates the object with points being read from the file
+    Reads the data from the passed-in file and populates the object with points being read from the file
     */
-    // reads the data, populates vector
-    this->myvectorPoints.voidSetSize(intGetTotalLines(fileName));
 
-    // for the file
-    std::ifstream ifstreamFile;
+    // Calcula o total de linhas (número de pontos) e inicializa o vetor
+    int totalLines = intGetTotalLines(fileName);
+    this->myvectorPoints.voidSetSize(totalLines);
 
-    // open the file
-    ifstreamFile.open(fileName);
-    if(!ifstreamFile){
-        // if invalid file name, exit
-        std::cout << "Error: file cannot be opened.\n";
+    // Vetores para armazenar resultados parciais
+    myVector<double> stddevs(this->intPointDimensions, 0);
+    myVector<double> avgs(this->intPointDimensions, 0);
+    myVector<double> mins(this->intPointDimensions, __DBL_MAX__);
+    myVector<double> maxes(this->intPointDimensions, __DBL_MIN__);
+
+    // Abrimos o arquivo para leitura
+    std::ifstream ifstreamFile(fileName, std::ios::in);
+    if (!ifstreamFile) {
+        std::cerr << "Error: file cannot be opened.\n";
         exit(1);
     }
-    // vectors to hold each needed property
-    myVector<double> stddevs {this->intPointDimensions,0};
-    myVector<double> avgs {this->intPointDimensions,0};
-    myVector<double> mins {this->intPointDimensions,__DBL_MAX__};
-    myVector<double> maxes {this->intPointDimensions,__DBL_MIN__};
 
-    // for reading the lines
-    std::string strLine;
-    // for keeping count of the dimension
-    int intDimCounter {0};
-    // for keeping track of what line the file is on (this tells what point number it is on)
-    int intLineCounter {0};
-    myVector<T> myvectorTCoords {this->intPointDimensions};
-    Point<T> pointNew {myvectorTCoords};
-    T tReadValueAtDimN;
-    // open file
-    if(ifstreamFile.is_open()){
-        // get lines 
-        while(std::getline(ifstreamFile,strLine)){
-            // set dim counter to zero
-            intDimCounter = 0;
-
-            std::stringstream ss(strLine);
-
-            while(ss >> tReadValueAtDimN and intDimCounter != this->intPointDimensions){
-                myvectorTCoords[intDimCounter] = tReadValueAtDimN;
-                if(tReadValueAtDimN >= maxes.tGetByReference(intDimCounter)){
-                    maxes[intDimCounter] = tReadValueAtDimN;
-                }
-                if(tReadValueAtDimN <= mins.tGetByReference(intDimCounter)){
-                    mins[intDimCounter] = tReadValueAtDimN;
-                }
-                // add to avgs, later divide by num points
-                avgs[intDimCounter] += tReadValueAtDimN;
-                pointNew.voidSetCoordVector(myvectorTCoords);
-                intDimCounter ++ ;
-            }
-            this->myvectorPoints[intLineCounter] = pointNew;
-            intLineCounter ++;
-        }
-    }
+    // Lê todas as linhas do arquivo e as armazena em memória
+    std::vector<std::string> fileLines(totalLines);
+    for (int i = 0; i < totalLines && std::getline(ifstreamFile, fileLines[i]); ++i) {}
 
     ifstreamFile.close();
-    // divide by total num points to get avgs
-    int pointCount = this->myvectorPoints.intLength();
-    for(int i=0;i<this->intPointDimensions;++i){
-        avgs[i] /= pointCount;
-    }
-    // s^2 = sum(xi - mean(x))^2 * (1/n): populate stddev
-    // store the difference
-    double doubleDiff {0};
-    for(int i=0;i<pointCount;++i){
-        for(int j=0;j<this->intPointDimensions;++j){
-            doubleDiff = (this->myvectorPoints.tGetByReference(i).tGetValAtDimNByReference(j) - avgs.tGetByReference(j));
-            doubleDiff  = (doubleDiff * doubleDiff);
-            stddevs[j] += doubleDiff;
+
+    // Vetores locais para cada thread
+    std::vector<myVector<double>> localAvgs(omp_get_max_threads(), myVector<double>(this->intPointDimensions, 0));
+    std::vector<myVector<double>> localMins(omp_get_max_threads(), myVector<double>(this->intPointDimensions, __DBL_MAX__));
+    std::vector<myVector<double>> localMaxes(omp_get_max_threads(), myVector<double>(this->intPointDimensions, __DBL_MIN__));
+
+    // Processa os pontos em paralelo
+    #pragma omp parallel
+    {
+        int threadID = omp_get_thread_num();
+        myVector<T> myvectorTCoords(this->intPointDimensions);
+        Point<T> pointNew(myvectorTCoords);
+
+        #pragma omp for
+        for (int i = 0; i < totalLines; ++i) {
+            std::stringstream ss(fileLines[i]);
+            T tReadValueAtDimN;
+            int intDimCounter = 0;
+
+            while (ss >> tReadValueAtDimN && intDimCounter < this->intPointDimensions) {
+                myvectorTCoords[intDimCounter] = tReadValueAtDimN;
+
+                // Atualiza mínimos e máximos locais
+                if (tReadValueAtDimN > localMaxes[threadID].tGetByReference(intDimCounter)) {
+                    localMaxes[threadID][intDimCounter] = tReadValueAtDimN;
+                }
+                if (tReadValueAtDimN < localMins[threadID].tGetByReference(intDimCounter)) {
+                    localMins[threadID][intDimCounter] = tReadValueAtDimN;
+                }
+
+                // Soma para calcular médias locais
+                localAvgs[threadID][intDimCounter] += tReadValueAtDimN;
+                intDimCounter++;
+            }
+
+            pointNew.voidSetCoordVector(myvectorTCoords);
+            this->myvectorPoints[i] = pointNew;
         }
     }
-    // now divide by num points and sqrt
-    for(int i=0;i<this->intPointDimensions;++i){
-        stddevs[i] = std::sqrt((stddevs.tGetByReference(i)/(pointCount)));
+
+    for (int i = 0; i < this->intPointDimensions; ++i) {
+        for (int t = 0; t < omp_get_max_threads(); ++t) {
+            avgs[i] += localAvgs[t][i];
+            mins[i] = std::min(mins[i], localMins[t][i]);
+            maxes[i] = std::max(maxes[i], localMaxes[t][i]);
+        }
+        avgs[i] /= totalLines;
     }
-    // now assign vectors
+
+    // Calcula o desvio padrão em paralelo
+    #pragma omp parallel for
+    for (int i = 0; i < totalLines; ++i) {
+        for (int j = 0; j < this->intPointDimensions; ++j) {
+            double diff = this->myvectorPoints.tGetByReference(i).tGetValAtDimNByReference(j) - avgs[j];
+            #pragma omp atomic
+            stddevs[j] += diff * diff;
+        }
+    }
+
+    for (int i = 0; i < this->intPointDimensions; ++i) {
+        stddevs[i] = std::sqrt(stddevs[i] / totalLines);
+    }
+
+    // Atribui os valores calculados aos membros da classe
     this->myvectorStdDevs.voidSetEqualLhsRhs(stddevs);
     this->myvectorAvgs.voidSetEqualLhsRhs(avgs);
     this->myvectorMins.voidSetEqualLhsRhs(mins);
     this->myvectorMaxes.voidSetEqualLhsRhs(maxes);
 
 }
+
 // read csv file
 template <class T>
 void PointReader<T>::voidReadCSV(const std::string &strFileName){
@@ -577,7 +627,7 @@ operator
 */
 // stream extraction
 template <class T>
-std::istream &operator >>(std::istream &fileInput,PointReader<T> &aReader){
+std::istream &operator>>(std::istream &fileInput, PointReader<T> &aReader) {
     /*
     Inputs: 
     istream, PointReader, istream to have data pulled from, point reader to have data put into 
@@ -587,83 +637,94 @@ std::istream &operator >>(std::istream &fileInput,PointReader<T> &aReader){
     Stream extraction operator for populating a PointReader object
     */
 
-    // first need to check if object has point dimensions.
-    // if not, exit.
+    // Check if the object has point dimensions.
     aReader.voidCheckHasPointDimensions();
 
-    // get line count
+    // Read the file to determine the total number of lines
+    std::vector<std::string> lines;
     std::string strLine;
-    int intLineCounter {0};
-    while(fileInput.good()){
-        while(std::getline(fileInput,strLine)){
-            intLineCounter ++;
-        }
+    while (std::getline(fileInput, strLine)) {
+        lines.push_back(strLine);
     }
-    // reset the position at file
+
+    // Reset the input stream
     fileInput.clear();
-    fileInput.seekg(0,std::ios::beg);
-    // set size of the point vector
-    myVector<Point<T>> points {intLineCounter};
+    fileInput.seekg(0, std::ios::beg);
 
-    // counter for points
-    int counter;
-    // reset line counter since going thru again
-    intLineCounter = 0;
-
+    int intLineCounter = lines.size();
     int intPointDimensions = aReader.intGetPointDimensions();
 
-    myVector<double> stddevs {intPointDimensions,0};
-    myVector<double> avgs {intPointDimensions,0};
-    myVector<double> mins {intPointDimensions,__DBL_MAX__};
-    myVector<double> maxes {intPointDimensions,__DBL_MIN__};
-    myVector<T> myvectorTCoords {intPointDimensions};
-    Point<T> pointNew {myvectorTCoords};
-    T tValAtDimN {0};
+    // Initialize vectors for statistics
+    myVector<double> stddevs(intPointDimensions, 0);
+    myVector<double> avgs(intPointDimensions, 0);
+    myVector<double> mins(intPointDimensions, __DBL_MAX__);
+    myVector<double> maxes(intPointDimensions, __DBL_MIN__);
 
-    while(fileInput.good()){
-        while(std::getline(fileInput,strLine)){
-            counter = 0;
+    myVector<Point<T>> points(intLineCounter);
 
+    // Parallel processing of lines
+    #pragma omp parallel
+    {
+        myVector<double> localAvgs(intPointDimensions, 0);
+        myVector<double> localMins(intPointDimensions, __DBL_MAX__);
+        myVector<double> localMaxes(intPointDimensions, __DBL_MIN__);
+        myVector<double> localStddevs(intPointDimensions, 0);
 
-            std::stringstream ss(strLine);
+        #pragma omp for schedule(dynamic)
+        for (int i = 0; i < intLineCounter; ++i) {
+            std::stringstream ss(lines[i]);
+            myVector<T> myvectorTCoords(intPointDimensions);
+            Point<T> pointNew(myvectorTCoords);
 
-            while(ss >> tValAtDimN and counter != intPointDimensions){
+            T tValAtDimN = 0;
+            int counter = 0;
+
+            while (ss >> tValAtDimN && counter < intPointDimensions) {
                 myvectorTCoords[counter] = tValAtDimN;
-                if(tValAtDimN >= maxes.tGetByReference(counter)){
-                    maxes[counter] = tValAtDimN;
-                }
-                if(tValAtDimN <= mins.tGetByReference(counter)){
-                    mins[counter] = tValAtDimN;
-                }
-                // add to avgs, later divide by num points
-                avgs[counter] += tValAtDimN;
 
-                counter ++ ;
+                // Update local statistics
+                localAvgs[counter] += tValAtDimN;
+                localMins[counter] = std::min(localMins[counter], tValAtDimN);
+                localMaxes[counter] = std::max(localMaxes[counter], tValAtDimN);
+
+                counter++;
             }
+
             pointNew.voidSetCoordVector(myvectorTCoords);
-            points[intLineCounter] = pointNew;
-            intLineCounter ++;
+            points[i] = pointNew;
+        }
+
+        // Reduce results to global vectors
+        #pragma omp critical
+        {
+            for (int j = 0; j < intPointDimensions; ++j) {
+                avgs[j] += localAvgs[j];
+                mins[j] = std::min(mins[j], localMins[j]);
+                maxes[j] = std::max(maxes[j], localMaxes[j]);
+            }
         }
     }
 
-    // divide total points by num points to get avgs
-    for(int i=0;i<intPointDimensions;++i){
-        avgs[i] /= points.intLength();
+    // Calculate averages
+    int pointCount = points.intLength();
+    for (int i = 0; i < intPointDimensions; ++i) {
+        avgs[i] /= pointCount;
     }
-    // s^2 = sum(xi - mean(x))^2 * (1/(n)) pop stddev
-    double diff {0};
-    for(int i=0;i<points.intLength();++i){
-        for(int j=0;j<intPointDimensions;++j){
-            diff = (points.tGetByReference(i).tGetValAtDimNByReference(j) - avgs[j]);
-            diff = (diff * diff);
-            stddevs[j] += diff;
+
+    // Compute standard deviations
+    // #pragma omp parallel for schedule(dynamic) reduction(+ : stddevs[:intPointDimensions])
+    for (int i = 0; i < pointCount; ++i) {
+        for (int j = 0; j < intPointDimensions; ++j) {
+            double diff = points[i].tGetValAtDimNByReference(j) - avgs[j];
+            stddevs[j] += diff * diff;
         }
     }
-    int pointCount = points.intLength();
-    // now divide by num points (pop std) and square root
-    for(int i=0;i<intPointDimensions;++i){
-        stddevs[i] = std::sqrt((stddevs.tGetByReference(i)/(pointCount)));
+
+    for (int i = 0; i < intPointDimensions; ++i) {
+        stddevs[i] = std::sqrt(stddevs[i] / pointCount);
     }
+
+    // Assign results to the reader object
     aReader.voidSetMyVectorAvgs(avgs);
     aReader.voidSetMyVectorMaxes(maxes);
     aReader.voidSetMyVectorMins(mins);

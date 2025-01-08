@@ -290,10 +290,23 @@ void kMeansCalc<T>::voidAssignPoints(){
 
     // hold the current distance
     double doubleCurrentDist {0};
+    
+    // Array para armazenar contribuições locais de cada thread
+    std::vector<double> localEntropy[this->intClusterCount];
+    std::vector<int> localMembership[this->intClusterCount];
+
+    // Inicializar os vetores locais
+    for (int i = 0; i < this->intClusterCount; ++i) {
+        localEntropy[i] = std::vector<double>(omp_get_max_threads(), 0.0);
+        localMembership[i] = std::vector<int>(omp_get_max_threads(), 0);
+    }
 
     // loop thru clusters, find closest one
+    #pragma omp parallel for \
+    private(intBestCentroid, doubleMinDist, doubleCurrentDist) \
+    shared(localEntropy, localMembership)
     for(int i=0;i<this->intPointCount;++i){
-
+        int threadId = omp_get_thread_num();
         intBestCentroid = 0;
         doubleMinDist = __DBL_MAX__;
 
@@ -309,10 +322,25 @@ void kMeansCalc<T>::voidAssignPoints(){
                 intBestCentroid = j;
             }
         }
-        // found min distance between a point j and centroid i
-        // add that distance to the centroid's entropy
-        // also add membership
-        this->myvectorCentroidPoints[intBestCentroid].voidAddToEntropyAndMembership(doubleMinDist,1);
+
+        // Acumular valores localmente por thread
+        localEntropy[intBestCentroid][threadId] += doubleMinDist;
+        localMembership[intBestCentroid][threadId] += 1;
+
+    }
+
+    // Combinar resultados locais em uma etapa sequencial
+    for (int i = 0; i < this->intClusterCount; ++i) {
+        double totalEntropy = 0.0;
+        int totalMembership = 0;
+
+        for (int t = 0; t < omp_get_max_threads(); ++t) {
+            totalEntropy += localEntropy[i][t];
+            totalMembership += localMembership[i][t];
+        }
+
+        // Atualizar valores no cluster
+        this->myvectorCentroidPoints[i].voidAddToEntropyAndMembership(totalEntropy, totalMembership);
     }
 }
 
@@ -424,6 +452,8 @@ void kMeansCalc<T>::voidFindOptimalClustersCurrentSeed(const int &intMaxIteratio
         Loop thru each dimension of the current centroids and compare to old centroids.
         If each dimension is below tolerance, exit. Else, repeat (even if a SINGLE dimension is above, repeat)
         */
+
+       #pragma omp parallel for private(doubleCurrentDist) reduction(&&: boolCurrentlyBelowTolerance)
         for(int i=0;i<this->intClusterCount;++i){
             // set currently below tolerance to true, if find a difference greater than tolerance then it immediately goes false
             boolCurrentlyBelowTolerance = true;

@@ -268,6 +268,8 @@ double Point<T>::doubleGetDistance(const Point<T> &aPoint)const {
         exit(1);
     }
     double distance = 0;
+
+    #pragma omp parallel for reduction(+:distance)
     for(int i=0;i<this->intDimensions;i++){
         distance += doubleGetDistanceAtDimN(aPoint,i);
     }
