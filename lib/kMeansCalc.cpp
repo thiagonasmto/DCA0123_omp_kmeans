@@ -14,6 +14,7 @@ also output a text file.
 
 
 #include "./kMeansCalc.h"
+#include <omp.h>
 
 /*
  * ***************************

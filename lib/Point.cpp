@@ -12,6 +12,7 @@ also output a text file.
 #define POINT_CPP
 
 #include "./Point.h"
+#include <omp.h>
 
 /*
 __________________________________________________________________________________

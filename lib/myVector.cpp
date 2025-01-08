@@ -12,6 +12,7 @@ also output a text file.
 #define MY_VECTOR_CPP
 
 #include "./myVector.h"
+#include <omp.h>
 
 // default ctor
 template <class T>
