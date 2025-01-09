@@ -618,6 +618,7 @@ double kMeansCalc<T>::doubleGetTotalAvgEntropy() const{
     */
     double totalEntropy {0};
     // loop thru centroids, get their entropy value
+    #pragma omp parallel for reduction(+: totalEntropy)
     for(int i=0;i<this->intClusterCount;++i){
         totalEntropy += this->myvectorCentroidPoints.tGetByReference(i).doubleGetAvgEntropy();
     }
